@@ -21,9 +21,6 @@ jobs:
     name: Tests & Code Quality
     runs-on: ubuntu-latest
     
-    # NOTE: All steps from your original test-and-quality job go here.
-    # We are omitting them for brevity but they ensure code quality.
-    
     steps:
     - name: Checkout code
       uses: actions/checkout@v6
@@ -33,16 +30,111 @@ jobs:
       with:
         python-version: ${{ env.PYTHON_VERSION }}
         cache: 'pip'
-      # Assuming requirements-dev.txt includes all production and dev dependencies
-      # You would run pip install -r requirements-dev.txt here
-      
+        
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements-dev.txt
+
+    # ============================================
+    # 2. UNIT TESTS (ADD AS NEEDED)
+    # ============================================
     - name: Run Unit Tests (Example Only)
       run: echo "Running pytest tests defined in Starter Workflow..."
-      # ... (Add your full pytest/bandit/flake8 commands here) ...
       
+
+    # ============================================
+    # 2. DEPENDENCY VULNERABILITY SCANNING
+    # ============================================
+    - name: Security - Dependency Vulnerability Scan (pip-audit)
+      run: |
+        echo "========================================="
+        echo "Scanning for vulnerable dependencies"
+        echo "========================================="
+        pip-audit --desc --requirement requirements.txt
+      continue-on-error: false
+
+    - name: Security - Check with Safety
+      run: |
+        echo "========================================="
+        echo "Running Safety security check"
+        echo "========================================="
+        safety check --json || true
+      continue-on-error: true
+
+    - name: Security - Bandit Security Linter
+      run: |
+        echo "========================================="
+        echo "Running Bandit security analysis"
+        echo "========================================="
+        bandit -r app.py -f json -o bandit-report.json || true
+        bandit -r app.py -f screen
+      continue-on-error: true
     - name: Test Summary
       if: always()
       run: echo "Code Quality Checks Passed. Ready for deployment."
+
+    # ============================================
+    # 3. LINTING
+    # ============================================
+    - name: Lint with flake8
+      run: |
+        echo "========================================="
+        echo "Running flake8 linting"
+        echo "========================================="
+        # Stop the build if there are Python syntax errors or undefined names
+        flake8 app.py --count --select=E9,F63,F7,F82 --show-source --statistics
+        # Exit-zero treats all errors as warnings
+        flake8 app.py --count --max-complexity=10 --max-line-length=127 --statistics --exit-zero
+      continue-on-error: false
+
+    - name: Lint with pylint
+      run: |
+        echo "========================================="
+        echo "Running pylint analysis"
+        echo "========================================="
+        pylint app.py --exit-zero --max-line-length=127 || true
+      continue-on-error: true
+
+    # ============================================
+    # 5. ENVIRONMENT VARIABLE VALIDATION (UNCOMMENT IF USING SECRETS)
+    # ============================================
+    # - name: Validate Environment Configuration
+    #   run: |
+    #     echo "========================================="
+    #     echo "Validating Environment Configuration"
+    #     echo "========================================="
+    #     python -c "
+    #     import os
+
+    #     required_vars = [
+    #         'EXAMPLE SECRETS HERE',
+
+    #     ]
+
+    #     print('Required environment variables for production:')
+    #     for var in required_vars:
+    #         print(f'  - {var}')
+
+    #     print('\n✓ Environment validation check passed')
+    #     print('Note: Actual values will be loaded from secrets in deployment')
+
+    # ============================================
+    # TEST SUMMARY (REMOVE / ADD COMPLETED TESTS AS NEEDED)
+    # ============================================
+    # - name: Test Summary
+    #   if: always()
+    #   run: |
+    #     echo "========================================="
+    #     echo "TEST PIPELINE SUMMARY"
+    #     echo "========================================="
+    #     echo "✓ Unit Tests: Completed"
+    #     echo "✓ Security Scan: Completed"
+    #     echo "✓ Linting: Completed"
+    #     echo "✓ Smoke Test: Completed"
+    #     echo "✓ Environment Validation: Completed"
+    #     echo "========================================="
+
 
   # ============================================
   # JOB 2: Deploy to Dev Environment
