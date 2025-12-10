@@ -1,0 +1,149 @@
+# FILE: .github/workflows/ssm-deploy-reusable.yml
+# LOCATION: DCCA-ISCO/.github/.github/workflows/
+
+name: Reusable SSM Deployment Engine
+
+on:
+  workflow_call:
+    # Inputs define what the calling workflow must provide
+    inputs:
+      branch-name:
+        required: true
+        type: string
+      server-env:
+        required: true
+        type: string
+        
+    # Secrets define the required repository secrets
+    secrets:
+      AWS_ACCESS_KEY_ID: { required: true }
+      AWS_SECRET_ACCESS_KEY: { required: true }
+      AWS_REGION: { required: true }
+      APP_PATH: { required: true }
+      SCRIPT_NAME: { required: true }
+      SSM_OUTPUT_BUCKET: { required: true }
+      INSTANCE_ID: { required: true } # INSTANCE_ID comes from environment secrets
+      SERVER_HOST: { required: true } # SERVER_HOST comes from environment secrets
+
+jobs:
+  deploy-to-aws:
+    name: Deploy to ${{ inputs.server-env }} Server
+    runs-on: ubuntu-latest
+    
+    environment:
+      name: ${{ inputs.server-env }}
+
+    steps:
+    - name: Checkout code (for SSM command context)
+      uses: actions/checkout@v4
+
+    - name: Configure AWS Credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ secrets.AWS_REGION }}
+
+    - name: Deploy Application via SSM (Stop, Pull, Install)
+      run: |
+        echo "========================================="
+        echo "Deploying to ${{ inputs.server-env }} server"
+        echo "========================================="
+
+        # The full PowerShell script executed on the Windows instance via SSM
+        DEPLOY_COMMANDS='
+          # --- Environment Setup ---
+          $APP_PATH = "${{ secrets.APP_PATH }}"
+          $SCRIPT_NAME = "${{ secrets.SCRIPT_NAME }}"
+          
+          # 1. STOP PROCESS (Replaces your original stop logic)
+          Write-Host "🛑 Stopping existing processes..."
+          Get-WmiObject Win32_Process -Filter "name = \"'\"'pythonw.exe'\"'\"'\" and CommandLine LIKE \"*%${{ secrets.SCRIPT_NAME }}*\"" | ForEach-Object {
+              Write-Host "  Stopping PID: $($_.ProcessId)"
+              Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue
+          }
+          Start-Sleep -Seconds 3 
+          Write-Host "✓ Processes stopped."
+
+          # 2. CODE UPDATE (Force cleanup and pull)
+          Write-Host "🔄 Updating code from ${{ inputs.branch-name }} branch..."
+          cd $APP_PATH
+          git fetch origin 2>&1
+          git reset --hard origin/${{ inputs.branch-name }} 2>&1
+          git clean -fd 2>&1
+          git pull origin ${{ inputs.branch-name }} 2>&1
+          Write-Host "✓ Code updated."
+          
+          # 3. DEPENDENCY UPDATE
+          Write-Host "📚 Updating dependencies..."
+          & "$APP_PATH\venv\Scripts\Activate.ps1"
+          pip install -r requirements.txt --upgrade 2>&1
+          deactivate
+          Write-Host "✓ Deployment file sync complete."
+        '
+        
+        # Send deployment command via SSM
+        COMMAND_ID=$(aws ssm send-command \
+          --instance-ids "${{ secrets.INSTANCE_ID }}" \
+          --document-name "AWS-RunPowerShellScript" \ 
+          --comment "Deploy DCCA Chatbot - Branch: ${{ inputs.branch-name }}" \
+          --parameters "commands=$DEPLOY_COMMANDS" \
+          --output-s3-bucket-name "${{ secrets.SSM_OUTPUT_BUCKET }}" \
+          --output-s3-key-prefix "ssm-logs/${{ inputs.server-env }}" \
+          --timeout-seconds 300 \
+          --query "Command.CommandId" \
+          --output text)
+
+        echo "COMMAND_ID=$COMMAND_ID" >> $GITHUB_ENV
+
+        aws ssm wait command-executed \
+          --command-id "$COMMAND_ID" \
+          --instance-id "${{ secrets.INSTANCE_ID }}" \
+          --timeout 300
+
+    - name: Restart Application via SSM (The Start Process)
+      run: |
+        echo "========================================="
+        echo "Restarting Application on ${{ inputs.server-env }} server"
+        echo "========================================="
+
+        RESTART_COMMANDS='
+          $APP_PATH = "${{ secrets.APP_PATH }}"
+          $SCRIPT_NAME = "${{ secrets.SCRIPT_NAME }}"
+          $pythonw = Join-Path "$APP_PATH" "venv\\Scripts\\pythonw.exe"
+          
+          # Start-Process runs silently in the background
+          Start-Process -FilePath $pythonw -ArgumentList $SCRIPT_NAME -WorkingDirectory "$APP_PATH" -WindowStyle Hidden
+          
+          Start-Sleep -Seconds 5
+          Write-Host "✓ Application start command executed."
+        '
+
+        RESTART_COMMAND_ID=$(aws ssm send-command \
+          --instance-ids "${{ secrets.INSTANCE_ID }}" \
+          --document-name "AWS-RunPowerShellScript" \
+          --comment "Restart DCCA Chatbot Application" \
+          --parameters "commands=$RESTART_COMMANDS" \
+          --output-s3-bucket-name "${{ secrets.SSM_OUTPUT_BUCKET }}" \
+          --output-s3-key-prefix "ssm-logs/${{ inputs.server-env }}" \
+          --timeout-seconds 120 \
+          --query "Command.CommandId" \
+          --output text)
+
+        echo "RESTART_COMMAND_ID=$RESTART_COMMAND_ID" >> $GITHUB_ENV
+
+        aws ssm wait command-executed \
+          --command-id "$RESTART_COMMAND_ID" \
+          --instance-id "${{ secrets.INSTANCE_ID }}" \
+          --timeout 120
+
+    - name: Health Check and Summary
+      if: success()
+      run: |
+        echo "========================================="
+        echo "DEPLOYMENT SUMMARY"
+        echo "========================================="
+        echo "Environment: ${{ inputs.server-env }}"
+        echo "Server Host: ${{ secrets.SERVER_HOST }}"
+        echo "Access your application at: https://${{ secrets.SERVER_HOST }}"
+        # A full health check step can be added here once the application is ready
