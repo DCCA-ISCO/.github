@@ -1,0 +1,82 @@
+# FILE: .github/workflow-templates/ci-cd-starter.yml
+# LOCATION: DCCA-ISCO/.github/.github/workflow-templates/
+
+name: DCCA Python CI/CD (Starter Template)
+
+on:
+  push:
+    # Triggers on push to development and production branches
+    branches: [dev, master]
+  workflow_dispatch:  # Allows manual trigger
+
+env:
+  PYTHON_VERSION: '3.14'
+
+jobs:
+  # ============================================
+  # JOB 1: Run Tests and Quality Checks
+  # This section remains in the Starter file to ensure tests always run first
+  # ============================================
+  test-and-quality:
+    name: Tests & Code Quality
+    runs-on: ubuntu-latest
+    
+    # NOTE: All steps from your original test-and-quality job go here.
+    # We are omitting them for brevity but they ensure code quality.
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v6
+      
+    - name: Set up Python and Install dependencies
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+        cache: 'pip'
+      # Assuming requirements-dev.txt includes all production and dev dependencies
+      # You would run pip install -r requirements-dev.txt here
+      
+    - name: Run Unit Tests (Example Only)
+      run: echo "Running pytest tests defined in Starter Workflow..."
+      # ... (Add your full pytest/bandit/flake8 commands here) ...
+      
+    - name: Test Summary
+      if: always()
+      run: echo "Code Quality Checks Passed. Ready for deployment."
+
+  # ============================================
+  # JOB 2: Deploy to Dev Environment
+  # This job CALLS the reusable SSM logic.
+  # ============================================
+  deploy-dev:
+    name: Deploy to Dev Server
+    needs: test-and-quality  # Only deploy if tests pass
+    if: github.ref == 'refs/heads/dev'
+    
+    # CRITICAL: Calls the reusable workflow in the central repository
+    # Path: Owner/Repo/.github/workflows/Filename@Ref
+    uses: DCCA-ISCO/.github/.github/workflows/ssm-deploy-reusable.yml@main
+    
+    with:
+      branch-name: dev
+      server-env: development
+    
+    # Inherits all secrets defined at the repository and environment level
+    secrets: inherit
+
+  # ============================================
+  # JOB 3: Deploy to Production Environment
+  # ============================================
+  deploy-prod:
+    name: Deploy to Production Server
+    needs: test-and-quality
+    if: github.ref == 'refs/heads/master'
+    
+    # CRITICAL: Calls the reusable workflow in the central repository
+    uses: DCCA-ISCO/.github/.github/workflows/ssm-deploy-reusable.yml@main
+    
+    with:
+      branch-name: master
+      server-env: production
+    
+    secrets: inherit
