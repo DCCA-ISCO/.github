@@ -2,6 +2,11 @@
 # LOCATION: DCCA-ISCO/.github/.github/workflow-templates/
 
 name: DCCA Python CI/CD (Starter Template)
+description: >
+  Standardized template for Python applications deploying to AWS Windows
+  Servers via SSM, including full testing and security scans.
+label: AWS/Python Deployment
+icon: code
 
 on:
   push:
