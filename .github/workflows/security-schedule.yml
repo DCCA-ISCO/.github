@@ -1,0 +1,88 @@
+# .github/workflows/security-schedule.yml
+
+name: Scheduled and Manual Security Audits
+
+# ============================================
+# 1. SCHEDULED AUDITS (Weekly)
+# ============================================
+on:
+  schedule:
+    # Runs at 02:00 UTC every Monday. Adjust the cron expression as needed.
+    # This is currently set to run at 4:00 PM (Sunday)HST
+    # [minute] [hour] [day_of_month] [month] [day_of_week]
+    # For weekly scan:
+    - cron: '0 12 * * 1'
+
+  # ============================================
+  # 2. MANUAL TRIGGERS (Monthly Review/Sprints)
+  # ============================================
+  workflow_dispatch:
+    inputs:
+      audit_type:
+        description: 'Select audit type for manual run'
+        required: true
+        type: choice
+        default: 'Weekly Full Audit'
+        options:
+        - 'Weekly Full Audit'
+        - 'Monthly Manual Review'
+        - 'Dependency Update Sprint'
+
+jobs:
+  # ============================================
+  # JOB 1: WEEKLY FULL AUDIT (Scheduled or Manual)
+  # ============================================
+  full-security-audit:
+    name: Full Security Audit
+    runs-on: ubuntu-latest
+    
+    # This job runs if the trigger is 'schedule' OR if the manual input is selected
+    if: github.event_name == 'schedule' || github.event.inputs.audit_type == 'Weekly Full Audit'
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v6
+      
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.14'
+        cache: 'pip'
+
+    - name: Install dependencies
+      # Ensure you install all necessary security tools and production deps
+      run: pip install -r requirements-dev.txt
+      
+    # --- Weekly Scheduled Scans ---
+    - name: 1. Full Security Audit (Bandit/Safety)
+      run: |
+        echo "Running full security audit (e.g., bandit -r .)"
+        # Run deeper, more time-consuming scans here
+        bandit -r . -f html -o security_report.html
+      
+    - name: 2. Dependency Updates Check
+      # Use tools like 'pip-check' or 'pipdeptree' to check for out-of-date packages
+      run: pip list --outdated
+      
+    - name: 3. Generate Security Report
+      uses: actions/upload-artifact@v4
+      with:
+        name: security-report-${{ github.sha }}
+        path: security_report.html
+      
+  # ============================================
+  # JOB 2: MONTHLY MANUAL REVIEW (On-Demand)
+  # ============================================
+  monthly-manual-tasks:
+    name: Monthly Manual Tasks
+    runs-on: ubuntu-latest
+    
+    # This job only runs if the user specifically selects one of the monthly options manually
+    if: github.event.inputs.audit_type == 'Monthly Manual Review' || github.event.inputs.audit_type == 'Dependency Update Sprint'
+
+    steps:
+    - name: Output Manual Task Selection
+      run: |
+        echo "Starting manual task: ${{ github.event.inputs.audit_type }}"
+        # This step would typically trigger an external notification (Slack, Jira)
+        # and/or generate a specific report for the manual review team.
