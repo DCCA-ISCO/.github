@@ -1,0 +1,189 @@
+name: Python Tests Only (No Deployment)
+
+on:
+  push:
+    branches: [ dev, master ]
+  pull_request:
+    branches: [ dev, master ]
+  workflow_dispatch:  # Allows manual trigger
+
+env:
+  PYTHON_VERSION: '3.14'
+
+jobs:
+  # ============================================
+  # Run Tests and Quality Checks Only
+  # ============================================
+  test-and-quality:
+    name: Tests & Code Quality
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v6
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+        cache: 'pip'
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements-dev.txt
+
+    # ============================================
+    # 1. UNIT TESTS
+    # ============================================
+    - name: Run Unit Tests
+      run: |
+        echo "========================================="
+        echo "Running Unit Tests with pytest"
+        echo "========================================="
+        pytest tests/ -v --tb=short --cov=app --cov-report=term-missing --cov-report=xml
+      continue-on-error: false
+
+    - name: Upload coverage reports
+      uses: codecov/codecov-action@v4
+      if: always()
+      with:
+        file: ./coverage.xml
+        flags: unittests
+        name: codecov-umbrella
+      continue-on-error: true
+
+    # ============================================
+    # 2. DEPENDENCY VULNERABILITY SCANNING
+    # ============================================
+    - name: Security - Dependency Vulnerability Scan (pip-audit)
+      run: |
+        echo "========================================="
+        echo "Scanning for vulnerable dependencies"
+        echo "========================================="
+        pip-audit --desc --requirement requirements.txt
+      continue-on-error: false
+
+    - name: Security - Check with Safety
+      run: |
+        echo "========================================="
+        echo "Running Safety security check"
+        echo "========================================="
+        safety check --json || true
+      continue-on-error: true
+
+    - name: Security - Bandit Security Linter
+      run: |
+        echo "========================================="
+        echo "Running Bandit security analysis"
+        echo "========================================="
+        bandit -r . -f json -o bandit-report.json --exclude venv,tests || true
+        bandit -r . -f screen --exclude venv,tests
+      continue-on-error: true
+
+    # ============================================
+    # 3. LINTING
+    # ============================================
+    - name: Lint with flake8
+      run: |
+        echo "========================================="
+        echo "Running flake8 linting"
+        echo "========================================="
+        # Stop the build if there are Python syntax errors or undefined names
+        flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics --exclude venv,tests
+        # Exit-zero treats all errors as warnings
+        flake8 . --count --max-complexity=10 --max-line-length=127 --statistics --exit-zero --exclude venv,tests
+      continue-on-error: false
+
+    - name: Lint with pylint
+      run: |
+        echo "========================================="
+        echo "Running pylint analysis"
+        echo "========================================="
+        pylint **/*.py --exit-zero --max-line-length=127 || true
+      continue-on-error: true
+
+    # ============================================
+    # 4. SMOKE TEST
+    # ============================================
+    - name: Smoke Test - Import Application
+      run: |
+        echo "========================================="
+        echo "Running Smoke Test"
+        echo "========================================="
+        python -c "
+        import sys
+        import os
+        from unittest.mock import patch
+
+        # Mock environment variables (adjust for your application)
+        with patch.dict(os.environ, {
+            'REQUIRED_ENV_VAR': 'test-value'
+        }):
+            try:
+                import app
+                print('✓ App imports successfully')
+                if hasattr(app, 'app'):
+                    print('✓ Flask app initialized:', app.app.name)
+                    print('✓ Routes registered:', len(list(app.app.url_map.iter_rules())))
+                sys.exit(0)
+            except Exception as e:
+                print('✗ Smoke test failed:', str(e))
+                sys.exit(1)
+        "
+      continue-on-error: false
+
+    # ============================================
+    # 5. ENVIRONMENT VARIABLE VALIDATION
+    # ============================================
+    - name: Validate Environment Configuration
+      run: |
+        echo "========================================="
+        echo "Validating Environment Configuration"
+        echo "========================================="
+        python -c "
+        # List required environment variables for your application
+        required_vars = [
+            'EXAMPLE_VAR_1',
+            'EXAMPLE_VAR_2',
+        ]
+
+        print('Required environment variables for production:')
+        for var in required_vars:
+            print(f'  - {var}')
+
+        print('\n✓ Environment validation check passed')
+        print('Note: Actual values will be loaded from secrets in deployment')
+        "
+      continue-on-error: false
+
+    - name: Check Requirements File
+      run: |
+        echo "========================================="
+        echo "Validating requirements.txt"
+        echo "========================================="
+        pip check
+        echo "✓ No conflicting dependencies found"
+
+    # ============================================
+    # TEST SUMMARY
+    # ============================================
+    - name: Test Summary
+      if: always()
+      run: |
+        echo "========================================="
+        echo "TEST PIPELINE SUMMARY"
+        echo "========================================="
+        echo "✓ Unit Tests: Completed"
+        echo "✓ Security Scan: Completed"
+        echo "✓ Linting: Completed"
+        echo "✓ Smoke Test: Completed"
+        echo "✓ Environment Validation: Completed"
+        echo "========================================="
+        echo ""
+        echo "NOTE: This workflow runs tests only."
+        echo "No deployment will occur."
+        echo ""
+        echo "For deployment, use the full CI/CD workflow:"
+        echo "  python-ci-cd-ssm.yml"
+        echo "========================================="

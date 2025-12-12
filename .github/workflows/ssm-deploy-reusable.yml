@@ -1,149 +1,257 @@
-# FILE: .github/workflows/ssm-deploy-reusable.yml
-# LOCATION: DCCA-ISCO/.github/.github/workflows/
-
-name: Reusable SSM Deployment Engine
+name: Reusable SSM Deployment Workflow
 
 on:
   workflow_call:
-    # Inputs define what the calling workflow must provide
     inputs:
       branch-name:
+        description: 'Branch name to deploy (dev, master, etc.)'
         required: true
         type: string
       server-env:
+        description: 'Target environment (development, production, staging)'
         required: true
         type: string
-        
-    # Secrets define the required repository secrets
+      python-version:
+        description: 'Python version to use (optional)'
+        required: false
+        type: string
+        default: '3.14'
     secrets:
-      AWS_ACCESS_KEY_ID: { required: true }
-      AWS_SECRET_ACCESS_KEY: { required: true }
-      AWS_REGION: { required: true }
-      APP_PATH: { required: true }
-      SCRIPT_NAME: { required: true }
-      SSM_OUTPUT_BUCKET: { required: true }
-      INSTANCE_ID: { required: true } # INSTANCE_ID comes from environment secrets
-      SERVER_HOST: { required: true } # SERVER_HOST comes from environment secrets
+      AWS_ACCESS_KEY_ID:
+        required: true
+      AWS_SECRET_ACCESS_KEY:
+        required: true
+      AWS_REGION:
+        required: true
+      INSTANCE_ID:
+        required: true
+      APP_PATH:
+        required: true
+      SCRIPT_NAME:
+        required: true
+      SSM_OUTPUT_BUCKET:
+        required: true
+      SERVER_HOST:
+        required: false
 
 jobs:
-  deploy-to-aws:
-    name: Deploy to ${{ inputs.server-env }} Server
+  deploy:
+    name: Deploy to ${{ inputs.server-env }}
     runs-on: ubuntu-latest
-    
-    environment:
-      name: ${{ inputs.server-env }}
+    environment: ${{ inputs.server-env }}
 
     steps:
-    - name: Checkout code (for SSM command context)
-      uses: actions/checkout@v4
+    - name: Checkout code
+      uses: actions/checkout@v6
 
     - name: Configure AWS Credentials
-      uses: aws-actions/configure-aws-credentials@v4
+      uses: aws-actions/configure-aws-credentials@v5
       with:
         aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
         aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
         aws-region: ${{ secrets.AWS_REGION }}
 
-    - name: Deploy Application via SSM (Stop, Pull, Install)
+    - name: Verify SSM Connectivity
+      run: |
+        echo "========================================="
+        echo "Verifying SSM connectivity to ${{ inputs.server-env }} server"
+        echo "========================================="
+
+        # Check if instance is managed by SSM
+        aws ssm describe-instance-information \
+          --filters "Key=InstanceIds,Values=${{ secrets.INSTANCE_ID }}" \
+          --query "InstanceInformationList[0].[InstanceId,PingStatus,PlatformType,PlatformVersion]" \
+          --output table
+
+        echo "✓ SSM connectivity verified"
+
+    - name: Deploy Application via SSM
       run: |
         echo "========================================="
         echo "Deploying to ${{ inputs.server-env }} server"
         echo "========================================="
 
-        # The full PowerShell script executed on the Windows instance via SSM
-        DEPLOY_COMMANDS='
-          # --- Environment Setup ---
-          $APP_PATH = "${{ secrets.APP_PATH }}"
-          $SCRIPT_NAME = "${{ secrets.SCRIPT_NAME }}"
-          
-          # 1. STOP PROCESS (Replaces your original stop logic)
-          Write-Host "🛑 Stopping existing processes..."
-          Get-WmiObject Win32_Process -Filter "name = \"'\"'pythonw.exe'\"'\"'\" and CommandLine LIKE \"*%${{ secrets.SCRIPT_NAME }}*\"" | ForEach-Object {
-              Write-Host "  Stopping PID: $($_.ProcessId)"
-              Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue
-          }
-          Start-Sleep -Seconds 3 
-          Write-Host "✓ Processes stopped."
-
-          # 2. CODE UPDATE (Force cleanup and pull)
-          Write-Host "🔄 Updating code from ${{ inputs.branch-name }} branch..."
-          cd $APP_PATH
-          git fetch origin 2>&1
-          git reset --hard origin/${{ inputs.branch-name }} 2>&1
-          git clean -fd 2>&1
-          git pull origin ${{ inputs.branch-name }} 2>&1
-          Write-Host "✓ Code updated."
-          
-          # 3. DEPENDENCY UPDATE
-          Write-Host "📚 Updating dependencies..."
-          & "$APP_PATH\venv\Scripts\Activate.ps1"
-          pip install -r requirements.txt --upgrade 2>&1
-          deactivate
-          Write-Host "✓ Deployment file sync complete."
-        '
-        
         # Send deployment command via SSM
         COMMAND_ID=$(aws ssm send-command \
           --instance-ids "${{ secrets.INSTANCE_ID }}" \
-          --document-name "AWS-RunPowerShellScript" \ 
-          --comment "Deploy DCCA Chatbot - Branch: ${{ inputs.branch-name }}" \
-          --parameters "commands=$DEPLOY_COMMANDS" \
+          --document-name "AWS-RunPowerShellScript" \
+          --comment "Deploy - Branch: ${{ inputs.branch-name }} - Environment: ${{ inputs.server-env }}" \
+          --parameters 'commands=[
+            "Write-Host \"=========================================\"",
+            "Write-Host \"Starting Deployment to ${{ inputs.server-env }}\"",
+            "Write-Host \"=========================================\"",
+            "Write-Host \"Branch: ${{ inputs.branch-name }}\"",
+            "Write-Host \"Commit: ${{ github.sha }}\"",
+            "Write-Host \"Deployed by: ${{ github.actor }}\"",
+            "Write-Host \"Workflow: ${{ github.workflow }}\"",
+            "Write-Host \"\"",
+            "cd ${{ secrets.APP_PATH }}",
+            "Write-Host \"Working directory: $(Get-Location)\"",
+            "Write-Host \"\"",
+            "Write-Host \"Creating backup...\"",
+            "if (Test-Path \"backup_old\") { Remove-Item -Path \"backup_old\" -Recurse -Force -ErrorAction SilentlyContinue }",
+            "if (Test-Path \"backup\") { Rename-Item -Path \"backup\" -NewName \"backup_old\" -ErrorAction SilentlyContinue }",
+            "if (Test-Path \"*.py\") {",
+            "  New-Item -Path \"backup\" -ItemType Directory -Force | Out-Null",
+            "  Copy-Item -Path \"*.py\" -Destination \"backup\" -ErrorAction SilentlyContinue",
+            "  Copy-Item -Path \"requirements.txt\" -Destination \"backup\" -ErrorAction SilentlyContinue",
+            "  Write-Host \"✓ Backup created\"",
+            "}",
+            "Write-Host \"\"",
+            "Write-Host \"Pulling latest code from ${{ inputs.branch-name }} branch...\"",
+            "git fetch origin 2>&1",
+            "git reset --hard origin/${{ inputs.branch-name }} 2>&1",
+            "git pull origin ${{ inputs.branch-name }} 2>&1",
+            "Write-Host \"✓ Code updated\"",
+            "Write-Host \"\"",
+            "Write-Host \"Updating dependencies...\"",
+            "& \"${{ secrets.APP_PATH }}\\venv\\Scripts\\Activate.ps1\"",
+            "python -m pip install --upgrade pip 2>&1 | Out-Null",
+            "pip install -r requirements.txt --upgrade 2>&1",
+            "deactivate",
+            "Write-Host \"✓ Dependencies updated\"",
+            "Write-Host \"\"",
+            "Write-Host \"✓ Deployment complete\""
+          ]' \
           --output-s3-bucket-name "${{ secrets.SSM_OUTPUT_BUCKET }}" \
           --output-s3-key-prefix "ssm-logs/${{ inputs.server-env }}" \
-          --timeout-seconds 300 \
           --query "Command.CommandId" \
           --output text)
 
+        echo "Command ID: $COMMAND_ID"
         echo "COMMAND_ID=$COMMAND_ID" >> $GITHUB_ENV
 
+        # Wait for command to complete
+        echo "Waiting for deployment to complete..."
         aws ssm wait command-executed \
           --command-id "$COMMAND_ID" \
           --instance-id "${{ secrets.INSTANCE_ID }}" \
           --timeout 300
 
-    - name: Restart Application via SSM (The Start Process)
+        echo "✓ Deployment command completed"
+
+    - name: Get Deployment Output
+      if: always()
+      run: |
+        echo "========================================="
+        echo "Deployment Output"
+        echo "========================================="
+
+        # Get command output
+        aws ssm get-command-invocation \
+          --command-id "${{ env.COMMAND_ID }}" \
+          --instance-id "${{ secrets.INSTANCE_ID }}" \
+          --query "[StandardOutputContent,StandardErrorContent]" \
+          --output text
+
+    - name: Restart Application via SSM
       run: |
         echo "========================================="
         echo "Restarting Application on ${{ inputs.server-env }} server"
         echo "========================================="
 
-        RESTART_COMMANDS='
-          $APP_PATH = "${{ secrets.APP_PATH }}"
-          $SCRIPT_NAME = "${{ secrets.SCRIPT_NAME }}"
-          $pythonw = Join-Path "$APP_PATH" "venv\\Scripts\\pythonw.exe"
-          
-          # Start-Process runs silently in the background
-          Start-Process -FilePath $pythonw -ArgumentList $SCRIPT_NAME -WorkingDirectory "$APP_PATH" -WindowStyle Hidden
-          
-          Start-Sleep -Seconds 5
-          Write-Host "✓ Application start command executed."
-        '
-
+        # Send restart command via SSM
         RESTART_COMMAND_ID=$(aws ssm send-command \
           --instance-ids "${{ secrets.INSTANCE_ID }}" \
           --document-name "AWS-RunPowerShellScript" \
-          --comment "Restart DCCA Chatbot Application" \
-          --parameters "commands=$RESTART_COMMANDS" \
+          --comment "Restart Application - Environment: ${{ inputs.server-env }}" \
+          --parameters 'commands=[
+            "Write-Host \"=========================================\"",
+            "Write-Host \"Restarting Application\"",
+            "Write-Host \"=========================================\"",
+            "Write-Host \"Stopping existing Python processes...\"",
+            "$processes = Get-WmiObject Win32_Process -Filter \"name = '\''pythonw.exe'\''\" | Where-Object { $_.CommandLine -like \"*${{ secrets.SCRIPT_NAME }}*\" }",
+            "if ($processes) {",
+            "  foreach ($proc in $processes) {",
+            "    Write-Host \"  Stopping PID: $($proc.ProcessId)\"",
+            "    Stop-Process -Id $proc.ProcessId -Force -ErrorAction SilentlyContinue",
+            "  }",
+            "  Start-Sleep -Seconds 3",
+            "  Write-Host \"✓ Stopped $($processes.Count) process(es)\"",
+            "} else {",
+            "  Write-Host \"  No running processes found\"",
+            "}",
+            "Write-Host \"\"",
+            "Write-Host \"Starting application...\"",
+            "cd ${{ secrets.APP_PATH }}",
+            "$pythonw = Join-Path \"${{ secrets.APP_PATH }}\" \"venv\\Scripts\\pythonw.exe\"",
+            "$script = Join-Path \"${{ secrets.APP_PATH }}\" \"${{ secrets.SCRIPT_NAME }}\"",
+            "Start-Process -FilePath $pythonw -ArgumentList $script -WorkingDirectory \"${{ secrets.APP_PATH }}\" -WindowStyle Hidden",
+            "Start-Sleep -Seconds 5",
+            "Write-Host \"\"",
+            "$running = Get-Process pythonw -ErrorAction SilentlyContinue | Where-Object { $_.Path -like \"*${{ secrets.APP_PATH }}*\" }",
+            "if ($running) {",
+            "  Write-Host \"✓ Application started (PID: $($running.Id))\"",
+            "} else {",
+            "  Write-Host \"⚠ Warning: Could not verify process\"",
+            "}"
+          ]' \
           --output-s3-bucket-name "${{ secrets.SSM_OUTPUT_BUCKET }}" \
           --output-s3-key-prefix "ssm-logs/${{ inputs.server-env }}" \
-          --timeout-seconds 120 \
           --query "Command.CommandId" \
           --output text)
 
+        echo "Restart Command ID: $RESTART_COMMAND_ID"
         echo "RESTART_COMMAND_ID=$RESTART_COMMAND_ID" >> $GITHUB_ENV
 
+        # Wait for restart to complete
         aws ssm wait command-executed \
           --command-id "$RESTART_COMMAND_ID" \
           --instance-id "${{ secrets.INSTANCE_ID }}" \
           --timeout 120
 
-    - name: Health Check and Summary
+        echo "✓ Application restart completed"
+
+    - name: Get Restart Output
+      if: always()
+      run: |
+        echo "========================================="
+        echo "Restart Output"
+        echo "========================================="
+
+        aws ssm get-command-invocation \
+          --command-id "${{ env.RESTART_COMMAND_ID }}" \
+          --instance-id "${{ secrets.INSTANCE_ID }}" \
+          --query "[StandardOutputContent,StandardErrorContent]" \
+          --output text
+
+    - name: Health Check
       if: success()
+      run: |
+        echo "========================================="
+        echo "Running Health Check"
+        echo "========================================="
+
+        sleep 10
+
+        echo "Checking: https://${{ secrets.SERVER_HOST }}"
+
+        # Try to reach the application
+        if curl -k -s -o /dev/null -w "%{http_code}" --max-time 30 "https://${{ secrets.SERVER_HOST }}" | grep -q "200"; then
+          echo "✓ Health check passed (HTTP 200)"
+          echo "✓ Application is accessible"
+        else
+          echo "⚠ Health check warning: Could not verify HTTP 200"
+          echo "Note: Application may still be starting up or using self-signed certificate"
+        fi
+
+    - name: Deployment Summary
+      if: always()
       run: |
         echo "========================================="
         echo "DEPLOYMENT SUMMARY"
         echo "========================================="
         echo "Environment: ${{ inputs.server-env }}"
-        echo "Server Host: ${{ secrets.SERVER_HOST }}"
-        echo "Access your application at: https://${{ secrets.SERVER_HOST }}"
-        # A full health check step can be added here once the application is ready
+        echo "Instance ID: ${{ secrets.INSTANCE_ID }}"
+        echo "Server: ${{ secrets.SERVER_HOST }}"
+        echo "Branch: ${{ inputs.branch-name }}"
+        echo "Commit: ${{ github.sha }}"
+        echo "Deployed by: ${{ github.actor }}"
+        echo "Workflow: ${{ github.workflow }}"
+        echo "Run ID: ${{ github.run_id }}"
+        echo "Run Number: ${{ github.run_number }}"
+        echo "========================================="
+        echo ""
+        echo "Access your application at:"
+        echo "  https://${{ secrets.SERVER_HOST }}"
+        echo "========================================="

@@ -1,0 +1,15 @@
+{
+  "name": "Python Tests Only (No Deployment)",
+  "description": "Run comprehensive tests, security scans, and code quality checks without deploying. Perfect for pull request validation and standalone CI.",
+  "iconName": "python",
+  "categories": [
+    "Python",
+    "Testing",
+    "CI"
+  ],
+  "filePatterns": [
+    "^requirements\\.txt$",
+    "^requirements-dev\\.txt$",
+    "^.*\\.py$"
+  ]
+}

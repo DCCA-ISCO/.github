@@ -1,0 +1,16 @@
+{
+  "name": "Python CI/CD with AWS SSM Deployment",
+  "description": "Complete CI/CD pipeline with testing, security scanning, and automated deployment to AWS Windows Servers via SSM. Supports dev and production environments.",
+  "iconName": "python",
+  "categories": [
+    "Python",
+    "Deployment",
+    "CI/CD",
+    "AWS"
+  ],
+  "filePatterns": [
+    "^requirements\\.txt$",
+    "^requirements-dev\\.txt$",
+    "^.*\\.py$"
+  ]
+}
